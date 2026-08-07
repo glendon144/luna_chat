@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -35,6 +36,35 @@ RESPONSE_LENGTHS = {
     5: ("Explore the question expansively and thoroughly while remaining coherent.", 6000),
 }
 app = Flask(__name__)
+
+
+class RequestValidationError(ValueError):
+    pass
+
+
+def number_param(payload, name, default, *, minimum=None, maximum=None, integer=False):
+    """Read and validate a finite numeric request parameter."""
+    value = payload.get(name, default)
+    if isinstance(value, bool):
+        raise RequestValidationError(f"{name} must be a number.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise RequestValidationError(f"{name} must be a number.") from None
+    if not math.isfinite(number):
+        raise RequestValidationError(f"{name} must be a finite number.")
+    if integer and not number.is_integer():
+        raise RequestValidationError(f"{name} must be a whole number.")
+    if minimum is not None and number < minimum:
+        raise RequestValidationError(f"{name} must be at least {minimum}.")
+    if maximum is not None and number > maximum:
+        raise RequestValidationError(f"{name} must be at most {maximum}.")
+    return int(number) if integer else number
+
+
+@app.errorhandler(RequestValidationError)
+def handle_request_validation_error(exc):
+    return jsonify({"error": str(exc)}), 400
 
 
 def utc_now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -156,7 +186,7 @@ def delete_chat(chat_id):
 
 @app.post("/chat")
 def chat():
-    p=request.get_json(silent=True) or {}; message=str(p.get("message","")).strip(); mode=str(p.get("cache_mode","off")).lower(); chat_id=p.get("chat_id"); response_length=max(1,min(5,int(p.get("response_length",3))))
+    p=request.get_json(silent=True) or {}; message=str(p.get("message","")).strip(); mode=str(p.get("cache_mode","off")).lower(); chat_id=p.get("chat_id"); response_length=number_param(p,"response_length",3,minimum=1,maximum=5,integer=True)
     if not message:return jsonify({"error":"Please enter a message."}),400
     if len(message)>50000:return jsonify({"error":"That message is too long for this demo."}),400
     if mode not in CACHE_MODES:mode="off"
@@ -177,7 +207,7 @@ def chat():
 
 @app.post("/speak")
 def speak():
-    p=request.get_json(silent=True) or {}; message_id=int(p.get("message_id") or 0); voice=str(p.get("voice","marin")).lower()
+    p=request.get_json(silent=True) or {}; message_id=number_param(p,"message_id",0,minimum=0,integer=True); voice=str(p.get("voice","marin")).lower()
     row=get_message(message_id)
     if not row:return jsonify({"error":"Message not found."}),404
     if voice not in ALLOWED_VOICES:return jsonify({"error":"Unsupported voice."}),400
@@ -186,7 +216,7 @@ def speak():
 
 @app.get("/api/messages/<int:message_id>/audio")
 def save_audio(message_id):
-    voice=request.args.get("voice","marin").lower(); rate=float(request.args.get("rate","1")); row=get_message(message_id)
+    voice=request.args.get("voice","marin").lower(); rate=number_param(request.args,"rate",1,minimum=MIN_AUDIO_RATE,maximum=MAX_AUDIO_RATE); row=get_message(message_id)
     if not row:return jsonify({"error":"Message not found."}),404
     if row["role"]!="assistant":return jsonify({"error":"Only Luna replies can be saved here."}),400
     if voice not in ALLOWED_VOICES:return jsonify({"error":"Unsupported voice."}),400
@@ -199,8 +229,8 @@ def save_audio(message_id):
 def export_podcast(chat_id):
     p=request.get_json(silent=True) or {}
     host_voice=str(p.get("host_voice","cedar")).lower(); luna_voice=str(p.get("luna_voice","marin")).lower()
-    pacing_cps=float(p.get("pacing_cps",NORMAL_PACING_CPS)); rate=pacing_cps_to_audio_rate(pacing_cps)
-    pause=max(.25,min(1.5,float(p.get("pause_seconds",.65))/rate)); transcribe=bool(p.get("transcribe",True))
+    pacing_cps=number_param(p,"pacing_cps",NORMAL_PACING_CPS,minimum=18,maximum=75); rate=pacing_cps_to_audio_rate(pacing_cps)
+    pause_seconds=number_param(p,"pause_seconds",.65,minimum=.25,maximum=1.5); pause=max(.25,min(1.5,pause_seconds/rate)); transcribe=bool(p.get("transcribe",True))
     if host_voice not in ALLOWED_VOICES or luna_voice not in ALLOWED_VOICES:return jsonify({"error":"Unsupported voice selection."}),400
     try:
         require_ffmpeg()
