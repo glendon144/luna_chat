@@ -64,6 +64,20 @@
       <form id="chat-form">
         <label for="message-input">Message</label>
         <textarea id="message-input" rows="4" placeholder="Write a message…" autofocus></textarea>
+        <section class="attachment-picker" aria-labelledby="attachment-heading">
+          <div class="attachment-heading-row">
+            <h2 id="attachment-heading">Attachments</h2>
+            <div class="attachment-actions">
+              <button id="choose-files-button" class="secondary" type="button">Choose Files</button>
+              <button id="clear-files-button" class="secondary" type="button" hidden>Clear</button>
+            </div>
+          </div>
+          <input id="file-input" type="file" multiple
+            accept=".txt,.md,.pdf,.csv,.json">
+          <div id="file-selection-status" class="file-selection-status" aria-live="polite">No files selected.</div>
+          <div id="file-list" class="file-list" aria-live="polite"></div>
+          <div class="file-selection-note">Supported: .txt, .md, .csv, .json, and text-based PDF files. Attachments are sent only when you press Send.</div>
+        </section>
         <div class="form-row">
           <span class="hint">Enter sends. Shift+Enter adds a line. Spoken audio is AI-generated. Podcast export requires FFmpeg.</span>
           <div class="send-actions">
@@ -75,5 +89,6 @@
     </section>
   </main>
   <script src="{{ url_for('static', filename='chat.js') }}"></script>
+  <script src="{{ url_for('static', filename='attachment-transport.js') }}"></script>
 </body>
 </html>
