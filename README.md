@@ -20,6 +20,31 @@ python app.py
 
 Open `http://127.0.0.1:5000`.
 
+### Optional LAN sharing
+
+Luna Chat is loopback-only by default. To let another device on your private
+LAN (such as a Facebook Portal) reach it, explicitly enable LAN sharing:
+
+```bash
+python app.py --share-lan --host 192.168.0.42
+```
+
+Replace the address with a private IPv4 address assigned to the computer
+running Luna Chat. The app refuses `0.0.0.0`, public addresses, and addresses
+that are not local to the computer. Use a stable DHCP reservation and open
+`http://192.168.0.42:5000` from the other device. Do not create an Internet
+router port-forward for this service.
+
+For a packaged launch configuration, the equivalent environment variables are
+`LUNA_SHARE_LAN=1` and `LUNA_HOST=192.168.0.42`. The default remains local-only.
+
+When bundled with PyInstaller in one-file mode, the app stores its database,
+audio cache, and exports in a persistent user-data folder rather than the
+temporary extraction folder: `~/Library/Application Support/Luna Chat` on
+macOS, `%LOCALAPPDATA%\\Luna Chat` on Windows, and
+`~/.local/share/luna_chat` on Linux. Set `LUNA_DATA_DIR` or `LUNA_DB_PATH` to
+override these locations.
+
 ## Audio features
 
 - **Speak Aloud** generates and locally caches the selected Luna voice.

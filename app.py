@@ -1,10 +1,14 @@
+import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
 import sqlite3
+import socket
 import subprocess
+import sys
 import tempfile
 import zipfile
 from io import BytesIO
@@ -19,8 +23,21 @@ from pypdf import PdfReader
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
-DB_PATH = Path(os.getenv("LUNA_DB_PATH", "luna_chat.db"))
-DATA_DIR = Path(os.getenv("LUNA_DATA_DIR", "data"))
+
+
+def default_data_dir():
+    """Choose a writable, persistent data location for a frozen app."""
+    if not getattr(sys, "frozen", False):
+        return Path("data")
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Luna Chat"
+    if os.name == "nt":
+        return Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Luna Chat"
+    return Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "luna_chat"
+
+
+DATA_DIR = Path(os.getenv("LUNA_DATA_DIR", str(default_data_dir())))
+DB_PATH = Path(os.getenv("LUNA_DB_PATH", str(DATA_DIR / "luna_chat.db")))
 AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
 EXPORT_DIR = DATA_DIR / "exports"
 SYSTEM_INSTRUCTIONS = os.getenv("LUNA_INSTRUCTIONS", "You are Luna in a simple conversational chat application. Be helpful, candid, and natural. Do not use tools unless explicitly enabled by the application.")
@@ -43,6 +60,67 @@ SUPPORTED_ATTACHMENT_TYPES={".txt",".md",".csv",".json",".pdf"}
 app.config["MAX_CONTENT_LENGTH"]=MAX_ATTACHMENT_TOTAL_SIZE+1*1024*1024
 
 
+def private_lan_addresses():
+    """Return private IPv4 addresses currently assigned to this computer."""
+    addresses = set()
+    try:
+        candidates = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except socket.gaierror:
+        candidates = []
+    for candidate in candidates:
+        address = candidate[4][0]
+        parsed = ipaddress.ip_address(address)
+        if parsed.is_private and not parsed.is_loopback:
+            addresses.add(str(parsed))
+    # Some systems resolve their hostname only to loopback. A UDP connect does
+    # not send data, but asks the OS which source address it would use for the
+    # default route, which gives the normal LAN address in that case.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            address = probe.getsockname()[0]
+            parsed = ipaddress.ip_address(address)
+            if parsed.is_private and not parsed.is_loopback:
+                addresses.add(str(parsed))
+    except OSError:
+        pass
+    return sorted(addresses, key=lambda address: tuple(map(int, address.split("."))))
+
+
+def server_config(argv=None, environ=None):
+    """Resolve a safe server bind address from explicit local-sharing options."""
+    parser = argparse.ArgumentParser(description="Run Luna Chat.")
+    parser.add_argument("--share-lan", action="store_true", help="Make Luna Chat reachable from this computer's private LAN address.")
+    parser.add_argument("--host", help="Private LAN address assigned to this computer. Requires --share-lan.")
+    parser.add_argument("--port", type=int, help="TCP port to listen on (default: 5000).")
+    parser.add_argument("--debug", action="store_true", help="Enable Flask debug mode. Use only for local development.")
+    args = parser.parse_args(argv)
+    environ = os.environ if environ is None else environ
+    share_lan = args.share_lan or environ.get("LUNA_SHARE_LAN", "").lower() in {"1", "true", "yes"}
+    configured_host = args.host or environ.get("LUNA_HOST")
+    port = args.port if args.port is not None else int(environ.get("PORT", "5000"))
+
+    if not 1 <= port <= 65535:
+        parser.error("--port must be between 1 and 65535.")
+    if configured_host and not share_lan:
+        parser.error("--host requires --share-lan (or LUNA_SHARE_LAN=1).")
+    if not share_lan:
+        return "127.0.0.1", port, args.debug
+
+    addresses = private_lan_addresses()
+    if configured_host:
+        try:
+            requested = ipaddress.ip_address(configured_host)
+        except ValueError:
+            parser.error("--host must be a valid IPv4 address assigned to this computer.")
+        if not requested.is_private or requested.is_loopback or configured_host not in addresses:
+            parser.error(f"--host must be one of this computer's private LAN addresses: {', '.join(addresses) or 'none found'}.")
+        return configured_host, port, args.debug
+    if len(addresses) != 1:
+        parser.error("--share-lan found multiple (or no) private LAN addresses; choose one with --host. Available: " + (", ".join(addresses) or "none"))
+    return addresses[0], port, args.debug
+
+
 def utc_now(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 def get_client():
     if not os.getenv("OPENAI_API_KEY"): raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -51,7 +129,7 @@ def connect_db():
     conn=sqlite3.connect(DB_PATH); conn.row_factory=sqlite3.Row; conn.execute("PRAGMA foreign_keys = ON"); return conn
 
 def init_db():
-    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True); EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True); AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True); EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     with connect_db() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS chats(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,previous_response_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
@@ -285,5 +363,8 @@ def export_transcript(chat_id):
         return send_file(bundle,mimetype="application/zip",as_attachment=True,download_name=bundle.name)
     except Exception as exc: app.logger.exception("Transcript export failed"); return jsonify({"error":str(exc)}),500
 
-if __name__=="__main__": init_db(); app.run(host="127.0.0.1",port=int(os.getenv("PORT","5000")),debug=True)
+if __name__=="__main__":
+    init_db()
+    host, port, debug = server_config()
+    app.run(host=host, port=port, debug=debug)
 else:init_db()
