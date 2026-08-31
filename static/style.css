@@ -106,6 +106,20 @@ button.secondary {
 button:disabled { opacity: .55; cursor: wait; }
 .hint { font-size: .82rem; opacity: .62; }
 
+.mic-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+}
+.mic-row button { padding: 7px 11px; font-size: .82rem; }
+.mic-status { font-size: .78rem; opacity: .66; }
+.mic-status.error { opacity: 1; }
+#microphone-button.recording {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 @media (max-width: 560px) {
   .app-shell {
     width: 100vw;
@@ -197,6 +211,10 @@ button:disabled { opacity: .55; cursor: wait; }
   }
   .speed-row output {
     text-align: left;
+  }
+  .mic-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

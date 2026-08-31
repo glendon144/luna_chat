@@ -64,6 +64,10 @@
       <form id="chat-form">
         <label for="message-input">Message</label>
         <textarea id="message-input" rows="4" placeholder="Write a message…" autofocus></textarea>
+        <div class="mic-row">
+          <button id="microphone-button" class="secondary" type="button" aria-pressed="false">Microphone</button>
+          <span id="microphone-status" class="mic-status" aria-live="polite">Speak to draft text, then edit or send it normally.</span>
+        </div>
         <section class="attachment-picker" aria-labelledby="attachment-heading">
           <div class="attachment-heading-row">
             <h2 id="attachment-heading">Attachments</h2>
@@ -90,5 +94,6 @@
   </main>
   <script src="{{ url_for('static', filename='chat.js') }}"></script>
   <script src="{{ url_for('static', filename='attachment-transport.js') }}"></script>
+  <script src="{{ url_for('static', filename='microphone.js') }}"></script>
 </body>
 </html>
