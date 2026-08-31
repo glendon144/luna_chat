@@ -23,6 +23,7 @@ from pypdf import PdfReader
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
 TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+TRANSCRIBE_LANGUAGE = os.getenv("OPENAI_TRANSCRIBE_LANGUAGE", "").strip()
 
 
 def default_data_dir():
@@ -57,6 +58,9 @@ app = Flask(__name__)
 MAX_ATTACHMENT_FILES=10; MAX_ATTACHMENT_FILE_SIZE=25*1024*1024; MAX_ATTACHMENT_TOTAL_SIZE=100*1024*1024
 MAX_EXTRACTED_TEXT_PER_FILE=1*1024*1024; MAX_EXTRACTED_TEXT_TOTAL=4*1024*1024
 SUPPORTED_ATTACHMENT_TYPES={".txt",".md",".csv",".json",".pdf"}
+MAX_TRANSCRIBE_FILE_SIZE=25*1024*1024
+SUPPORTED_TRANSCRIBE_EXTENSIONS={".webm",".mp3",".mp4",".mpeg",".mpga",".m4a",".wav",".ogg",".oga",".flac"}
+SUPPORTED_TRANSCRIBE_MIME_TYPES={"audio/webm","video/webm","audio/mpeg","audio/mp4","video/mp4","audio/x-m4a","audio/wav","audio/x-wav","audio/ogg","application/ogg","audio/flac","audio/x-flac","application/octet-stream"}
 app.config["MAX_CONTENT_LENGTH"]=MAX_ATTACHMENT_TOTAL_SIZE+1*1024*1024
 
 
@@ -178,6 +182,20 @@ def cached_speech(message_id,voice,text):
         audio=get_client().audio.speech.create(model=TTS_MODEL,voice=voice,input=text,instructions="Speak naturally, warmly, and clearly at an unhurried conversational pace.",response_format="mp3")
         data=audio.read() if hasattr(audio,"read") else bytes(audio.content); path.write_bytes(data)
     return path
+
+def transcription_text(result):
+    """Extract text without depending on one OpenAI SDK response representation."""
+    if isinstance(result, str):
+        return result.strip()
+    text=getattr(result,"text",None)
+    if isinstance(text,str):
+        return text.strip()
+    if isinstance(result,dict):
+        value=result.get("text")
+        if isinstance(value,str):
+            return value.strip()
+    return ""
+
 def require_ffmpeg():
     if not shutil.which("ffmpeg"): raise RuntimeError("FFmpeg is required for paced MP3 exports. Install it with: brew install ffmpeg")
 def pacing_cps_to_audio_rate(cps):
@@ -256,6 +274,43 @@ def get_chat(chat_id):
 def delete_chat(chat_id):
     with connect_db() as conn: conn.execute("DELETE FROM chats WHERE id=?",(chat_id,)); conn.commit()
     return jsonify({"ok":True})
+
+@app.post("/api/transcribe")
+def transcribe_audio():
+    """Accept a short browser recording and return editable transcript text."""
+    audio=request.files.get("audio")
+    if audio is None:
+        return jsonify({"error":"No audio file received."}),400
+
+    filename=os.path.basename(audio.filename or "recording.webm")
+    extension=Path(filename).suffix.lower()
+    mimetype=(audio.mimetype or "").split(";",1)[0].strip().lower()
+    if extension not in SUPPORTED_TRANSCRIBE_EXTENSIONS and mimetype not in SUPPORTED_TRANSCRIBE_MIME_TYPES:
+        return jsonify({"error":"Unsupported audio format."}),415
+
+    # Read only one byte past the limit. This avoids relying on an upload stream
+    # being seekable and prevents a very large recording from being buffered.
+    data=audio.stream.read(MAX_TRANSCRIBE_FILE_SIZE+1)
+    if not data:
+        return jsonify({"error":"Empty audio upload."}),400
+    if len(data)>MAX_TRANSCRIBE_FILE_SIZE:
+        return jsonify({"error":"Recording too large (max 25 MB)."}),413
+
+    try:
+        kwargs={
+            "model":TRANSCRIBE_MODEL,
+            "file":(filename,BytesIO(data),audio.mimetype or "audio/webm"),
+        }
+        if TRANSCRIBE_LANGUAGE:
+            kwargs["language"]=TRANSCRIBE_LANGUAGE
+        result=get_client().audio.transcriptions.create(**kwargs)
+        text=transcription_text(result)
+        if not text:
+            return jsonify({"error":"No speech detected."}),400
+        return jsonify({"text":text})
+    except Exception:
+        app.logger.exception("Transcription failed")
+        return jsonify({"error":"Transcription failed. Please try again."}),502
 
 @app.post("/chat")
 def chat():
@@ -339,7 +394,7 @@ def export_podcast(chat_id):
             try:
                 with dest.open("rb") as audio_file:
                     result=get_client().audio.transcriptions.create(model=TRANSCRIBE_MODEL,file=audio_file)
-                whisper_text=getattr(result,"text",None) or str(result)
+                whisper_text=transcription_text(result)
             except Exception:
                 app.logger.exception("Podcast transcription verification failed; authoritative transcript still created")
         sidecars=write_transcript_sidecars(EXPORT_DIR/stem,chat,timeline,whisper_text)
